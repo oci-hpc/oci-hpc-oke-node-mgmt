@@ -189,6 +189,32 @@ live-plan validated but does not yet have a publishable live mutation record.
 - [x] Terraform and OCI Resource Manager drift warnings without editing source
   configuration. `LIVE-PLAN`
 
+## NCCL Healthchecks Preview
+
+This unreleased work is not part of the production baseline above. The
+[preview guide](nccl-healthchecks.md) documents executable commands; the
+[design checklist](nccl-healthchecks-design.md#delivery-and-acceptance) tracks
+the complete delivery requirements.
+
+| Area | Implementation | Evidence |
+| --- | --- | --- |
+| `nodes healthchecks` selection, passive default, explicit NCCL subset | Preview implemented | Automated CLI/parser tests; live submission |
+| Single-node, anchor-pair, exact-set, whole-pool, local-block planning | Preview implemented | Automated planning and manifest tests; live selected-node API preflight |
+| MPI Operator and existing Kueue admission | Preview implemented | Live single-A100 execution through an existing topology-aware queue; no queue-policy changes |
+| `health profiles/list/get/results/logs/wait/cancel/cleanup` | Preview implemented | Automated CLI/workflow tests; live deadline handling and cleanup |
+| Ownership-bound logs, Kueue status, events, immutable private exports | Preview implemented | Automated identity, bounds, failure, and cleanup tests |
+| `services update-metadata` observation-only pass | Preview implemented | Automated selection, identity, confirmation, and no-workload-mutation tests; live evidence refresh |
+| `services active-hc` / `multi-node-hc` bounded NCCL passes | Preview implemented | Automated freshness, boot/profile identity, idle allocation, cooldown, alternate-partner, CLI, and submission-race tests |
+| `services all` enabled-handler orchestration | Preview implemented | Explicit enablement, metadata/active/multi-node ordering, fresh stage reads, wait failure propagation, and partial-result tests |
+| Full Slurm diagnostic parity | In progress | NCCL alone does not cover passive host diagnostics, stress/SDC, or separate IB tests |
+| RCCL, Slinky reservations, specialized transports, periodic execution | Not yet implemented | Requests requiring these adapters are rejected |
+| Live single-node NCCL success | Validated on BM.GPU4.8 | Eight A100 ranks; correctness and coverage PASS; local transport; performance UNGRADED |
+| Live two-node whole-pool host-network NCCL success | Validated on BM.GPU4.8 | Sixteen A100 ranks across two local blocks; correctness/coverage PASS, RDMA_OBSERVED, performance UNGRADED |
+| Default-pair, per-local-block, VF, and specialized live acceptance | Incomplete | Whole-pool success does not establish every selection mode, transport, shape, or adapter |
+
+The [profile coverage matrix](nccl-profile-coverage.md) lists upstream shapes and
+transport variants that still need implementation or live validation.
+
 ## Proposed
 
 - [ ] Synchronize Kueue ClusterQueue quotas after pool capacity changes.

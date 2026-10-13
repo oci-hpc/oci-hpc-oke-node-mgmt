@@ -121,12 +121,14 @@ def cli(
 
 from oke_hpc_mgmt.commands.addons import addons  # noqa: E402
 from oke_hpc_mgmt.commands.autoscaler import autoscaler  # noqa: E402
+from oke_hpc_mgmt.commands.benchmarks import HEALTH_COMMANDS, node_healthchecks  # noqa: E402
 from oke_hpc_mgmt.commands.clusters import clusters  # noqa: E402
 from oke_hpc_mgmt.commands.health import health  # noqa: E402
 from oke_hpc_mgmt.commands.nodes import nodes  # noqa: E402
 from oke_hpc_mgmt.commands.pools import pools  # noqa: E402
 from oke_hpc_mgmt.commands.recommendations import recommendations  # noqa: E402
 from oke_hpc_mgmt.commands.reconcile import reconcile  # noqa: E402
+from oke_hpc_mgmt.commands.services import services  # noqa: E402
 from oke_hpc_mgmt.commands.status import status  # noqa: E402
 from oke_hpc_mgmt.commands.topology import topology  # noqa: E402
 from oke_hpc_mgmt.commands.upgrades import (  # noqa: E402
@@ -146,6 +148,10 @@ cli.add_command(addons)
 cli.add_command(health)
 cli.add_command(recommendations)
 cli.add_command(reconcile)
+cli.add_command(services)
 cli.add_command(upgrades)
 clusters.add_command(upgrade_cluster)
 pools.add_command(upgrade_pool)
+nodes.add_command(node_healthchecks)
+for health_command in HEALTH_COMMANDS:
+    health.add_command(health_command)

@@ -1,5 +1,65 @@
 # Troubleshooting
 
+## NCCL Healthcheck Preview
+
+- Start with `nodes healthchecks ... --checks nccl --dry-run`. This checks API
+  permissions, current allocation, profile prerequisites, and server admission;
+  it does not establish runtime success.
+- When Kueue is present, provide an existing `--queue` in the selected namespace.
+  The tool refuses unverified admission rather than bypassing it. Inspect queue
+  holds, quotas, ResourceFlavors, topology, and the MPI integration externally.
+- Queue/startup evidence exports include owned Kueue Workload status and UID-matched
+  events, even when no benchmark Pod starts. Resolve denied Workload/event reads
+  before cleanup; the tool retains resources when diagnostics cannot be collected.
+- An initial submission can leave planned cases pending. `health logs --follow`
+  only reads logs. Use `health wait <run-id>` to advance the recorded run and
+  enforce client-side queue deadlines.
+- `services update-metadata` only exports observations and updates checkpoints.
+  It does not start pending cases, enforce deadlines, or clean up resources.
+  A successful refresh is not a successful benchmark; inspect the case verdicts.
+- Service `INELIGIBLE` decisions can reflect application Pods, an unfinished run,
+  missing boot identity, node pressure, or insufficient Ready stability. Resolve
+  the reported condition externally; service passes never evict workloads.
+- Kueue cancellation requires patch access to the run's owned Workload. The tool
+  deactivates that Workload before suspending its MPIJob. A resource-version
+  conflict during controller convergence requires rereading the same cancelled
+  run; it does not justify submitting a replacement benchmark.
+- `NEEDS_ACTIVE` requires matching passing local evidence and its cooldown;
+  a different image, iteration count, node boot, or profile does not qualify.
+  `NO_PARTNER` retains a suspect pair for investigation instead of repeating it
+  indefinitely or labelling both nodes defective. `DEFERRED` means the explicit
+  case bound was reached; a later pass can select remaining overdue nodes.
+- After a lost response, inspect or wait on the same run ID. Do not create a
+  second run merely because the first invocation lost its connection.
+- Evidence-export failures retain workloads. Verify operator storage and use
+  the original `--output-dir`. Missing or modified files must not be treated as
+  successful exports or bypassed during cleanup.
+- Unreadable container logs block destructive cancellation/cleanup. Resolve API
+  access or worker storage first, then repeat the same operation. Incomplete
+  evidence is not a passing test.
+- Worker DNS or SSH startup failures are retried only within the startup deadline.
+  Persistent failures remain failed/incomplete tests; the launcher never disables
+  strict host-key checking or replaces its pinned key to make a connection succeed.
+- Each worker address is resolved once and recorded as `MGMT_MPI_WORKER_ADDRESS`
+  before SSH readiness. MPI uses a run-local SSH mapping to that address. Duplicate
+  worker addresses are rejected. A replaced worker or changed host key is not
+  silently adopted; retain the run and inspect its ownership and coverage evidence.
+- A truncated measurement row is incomplete evidence even if another row and the
+  average bandwidth are present. Per-rank NCCL diagnostics are retained separately
+  during execution and emitted after the rank exits, avoiding table interleaving.
+  A missing, empty, or oversized diagnostic file fails execution; historical torn
+  rows are not repaired or reclassified as passing results.
+- A job that finishes during evidence collection is observed again before grading.
+  Keep `health wait` running, or repeat the metadata refresh, to collect the stable
+  final snapshot. A completion condition without the launcher exit is insufficient.
+- `--keep-resources` retains workers that can block later overlapping cases.
+  Resume `health wait` without that flag to release completed resources and
+  continue. `health cleanup` requires all cases to be terminal.
+- A `CLEANED` run can still contain failed or cancelled cases. Inspect
+  `health results <run-id> --format json` for the recorded outcome.
+
+See [NCCL Healthchecks](nccl-healthchecks.md) for prerequisites and result semantics.
+
 This guide covers common installation, discovery, readiness, and mutation
 problems when using `mgmt-oke` on an OCI HPC OKE operator node.
 

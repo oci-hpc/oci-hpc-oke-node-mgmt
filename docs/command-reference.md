@@ -725,11 +725,72 @@ Recommendations
 (none)
 ```
 
-Health evaluation is read-only and deterministic. It compares desired, active,
+`health run` evaluation is read-only and deterministic. It compares desired, active,
 and Ready capacity; discovery completeness; node state; allocatable
 accelerators; RDMA topology and virtual functions; OKE add-on lifecycle;
 autoscaler ownership; Kueue inventory; and Slinky protection metadata. A
 partial discovery result is reported as `WARN` rather than as a healthy cluster.
+
+## NCCL Healthchecks (Preview)
+
+```bash
+mgmt-oke nodes healthchecks --nodes 'gpu-[01-04]'
+mgmt-oke nodes healthchecks --pool <pool-name> --type active --checks nccl --queue <local-queue> --dry-run
+mgmt-oke nodes healthchecks --nodes gpu-01 --type multi-node --checks nccl --queue <local-queue> --dry-run
+mgmt-oke nodes healthchecks --pool <pool-name> --type multi-node --mode all-nodes --checks nccl --queue <local-queue> --wait
+mgmt-oke nodes healthchecks --pool <pool-name> --type multi-node --mode per-local-block --checks nccl --queue <local-queue> --wait
+mgmt-oke health profiles
+mgmt-oke health list --pool <pool-name>
+mgmt-oke health get <run-id> --format json
+mgmt-oke health results <run-id> --format json
+mgmt-oke health logs <run-id> --follow
+mgmt-oke health wait <run-id>
+mgmt-oke health cancel <run-id>
+mgmt-oke health cleanup <run-id>
+mgmt-oke services update-metadata --run-id <run-id> --dry-run
+mgmt-oke services update-metadata --pool <pool-name> --namespace <namespace> --yes
+mgmt-oke services active-hc --pool <pool-name> --checks nccl --queue <local-queue> --dry-run
+mgmt-oke services multi-node-hc --pool <pool-name> --checks nccl --queue <local-queue> --dry-run
+```
+
+Exactly one primary selector is required. Passive defaults to API readiness and
+reports incomplete host-diagnostic coverage. Active execution requires an explicit
+supported component, currently `--checks nccl`. Pairwise mode records selected
+anchors and additional eligible partners; `all-nodes` means one exact collective.
+No smaller ready subset is substituted. See [NCCL Healthchecks](nccl-healthchecks.md)
+for options, admission/RBAC requirements, asynchronous behavior, and evidence paths.
+
+`services update-metadata` observes existing runs once. Without a selector, it
+selects nonterminal, non-cancelling runs in `--namespace` (default `default`).
+Use repeatable `--run-id` or `--pool`, not both. The pass refuses more than
+`--max-runs` matches (default 32, maximum 128) instead of silently truncating.
+`--dry-run` only lists checkpoints. Execution requires confirmation or `--yes`.
+Exit status 0 means the refresh completed, not that benchmarks passed. The
+command writes checkpoints/exports but never submits, cancels, or deletes
+workloads; pending cases and deadlines still require `health wait`.
+
+`services active-hc` and `multi-node-hc` select a bounded due subset, not an
+exact-set collective. Choose one of `--nodes`, `--fields`, or `--pool`, and
+explicitly request `--checks nccl`. Defaults are `--interval-hours 24`,
+`--retry-seconds 600`, and `--max-cases 1` (maximum 32). GPU-idle/application-idle
+state, Ready stability, boot/profile freshness, active-check prerequisites, and
+alternate-partner rules are checked before submission. Every candidate decision
+is reported. Dry-run validates selected manifests without persistence; execution
+requires confirmation or `--yes`. Use `--wait` to advance/grade the submitted run.
+No eligible work returns 0 with skip reasons, not a passing health verdict.
+See [service semantics](nccl-healthchecks.md#eligibility-based-service-passes).
+
+```bash
+mgmt-oke services all --pool <pool-name> --checks nccl \
+  --enable update-metadata --enable active-hc --enable multi-node-hc \
+  --queue <local-queue> --dry-run
+```
+
+`services all` requires explicit `--enable` options and a pool. Enabled handlers
+run once in metadata/active/multi-node order, with fresh eligibility per stage.
+`--max-runs` bounds metadata inventory. A nonpassing waited stage prevents later
+submissions. See [combined passes](nccl-healthchecks.md#run-enabled-services-once)
+for cooldown and partial-completion behavior.
 
 ## Exit Status
 
@@ -738,8 +799,8 @@ partial discovery result is reported as `WARN` rather than as a healthy cluster.
 | `0` | Command succeeded; health checks found no failure or warning. |
 | `1` | Requested resource was not found, or a health command found a warning. |
 | `2` | Usage, validation, discovery, operation, timeout, or health failure. |
-| `3` | Upgrade reached a safe external-action checkpoint, such as blue-green workload migration. |
-| `130` | Interactive cancellation or keyboard interruption. |
+| `3` | External action or continued observation is required, including unfinished benchmark cases or cleanup. |
+| `130` | Interactive cancellation, keyboard interruption, or a cancelled benchmark result. |
 
 Warnings and progress are written to standard error. Table, JSON, and CSV data
 are written to standard output.

@@ -1,0 +1,596 @@
+# NCCL Healthchecks
+
+NCCL healthchecks submit run-owned MPIJobs against explicitly selected NVIDIA
+workers. The command terminology follows OCI HPC Slurm: `nodes healthchecks`
+selects the diagnostic category, while `health` manages recorded runs.
+
+`services update-metadata` provides a single observation-only service pass.
+`services active-hc` and `services multi-node-hc` select eligible, overdue NCCL
+participants for a bounded execution pass.
+
+This feature is a preview. The executable diagnostic component is NCCL. Full
+host diagnostics, GPU stress/SDC, separate InfiniBand bandwidth/latency checks,
+RCCL, Slurm reservations, specialized transports, and periodic services remain
+outside the currently executable subset. A missing component is not a passing
+check. Existing `health run` remains a read-only inventory evaluation.
+
+See [Profile Coverage](nccl-profile-coverage.md) for the exact shape/transport
+matrix and the distinction between implemented profiles and live validation.
+Profiles are packaged with the CLI; manifests are not fetched from GitHub at runtime.
+
+## Prerequisites
+
+- An installed, available MPI Operator exposing `kubeflow.org/v2beta1`.
+- An explicitly selected, Ready pool or node set with idle, exclusive physical
+  GPUs and a reviewed shape profile. MIG and shared GPU allocations are unsupported.
+- Existing Kueue admission configuration when Kueue is installed. Supply its
+  namespace-scoped LocalQueue with `--queue`; the tool does not create queues,
+  change quotas, or bypass admission.
+- A namespace admitting the rendered MPIJob and Pod security requirements.
+  Host-network and VF RDMA worker profiles use privileged containers.
+- For VF tests, an existing compatible SR-IOV network attachment and sufficient
+  allocatable `nvidia.com/rdma-vf` resources on every participant.
+- Space for the test image on workers and private evidence exports on the operator.
+
+Review available profiles without contacting the cluster:
+
+```bash
+mgmt-oke health profiles
+mgmt-oke nodes healthchecks --help
+```
+
+Profile availability does not establish live validation of every listed shape.
+Image/driver labels are compatibility hints; the worker validates GPU UUIDs and
+MIG state at runtime, and results require actual execution evidence.
+
+### Kubernetes Permissions
+
+Preflight verifies API access and performs server-side dry runs. The effective
+identity needs node and Pod reads, logs, namespace/CRD/controller discovery,
+Kueue topology/queue/flavor reads, namespaced Workload listing, event listing,
+and network-attachment reads for VF profiles.
+Kueue execution also requires namespaced Workload patch access so cancellation
+can deactivate only the Workload owned by the recorded MPIJob.
+It also needs namespaced ConfigMap and MPIJob creation/updates, MPIJob deletion,
+and access to the dedicated benchmark Lease in `kube-system`. All-namespace
+ConfigMap listing is required for overlapping-run detection. Pod-create access
+is checked through admission dry runs, not used to launch Pods directly.
+
+Do not grant node mutation, eviction, OCI lifecycle, or operator installation
+permissions solely for NCCL tests. Tests do not cordon, drain, evict, reboot,
+tag, terminate, resize, or reconfigure workers.
+
+## Select Participants
+
+Specify exactly one of `--nodes`, `--fields`, or `--pool`.
+
+```bash
+# Non-stress API readiness checks; currently reports incomplete host coverage.
+mgmt-oke nodes healthchecks --nodes 'gpu-[01-04]'
+
+# One local NCCL test per selected pool member.
+mgmt-oke nodes healthchecks --pool <pool-name> \
+  --type active --checks nccl --queue <local-queue> --dry-run
+
+# Slurm-compatible anchor/partner testing. Additional partners are displayed.
+mgmt-oke nodes healthchecks --nodes gpu-01 \
+  --type multi-node --checks nccl --queue <local-queue> --dry-run
+
+# One collective across every selected pool member.
+mgmt-oke nodes healthchecks --pool <pool-name> \
+  --type multi-node --mode all-nodes --checks nccl \
+  --queue <local-queue> --dry-run
+
+# One separate collective per complete local-block domain.
+mgmt-oke nodes healthchecks --pool <pool-name> \
+  --type multi-node --mode per-local-block --checks nccl \
+  --queue <local-queue> --dry-run
+
+# An exact two-node collective rather than two independently selected anchors.
+mgmt-oke nodes healthchecks --nodes gpu-01,gpu-02 \
+  --type multi-node --mode all-nodes --checks nccl \
+  --queue <local-queue> --dry-run
+```
+
+`--type all --checks nccl` includes API passive evidence, single-node NCCL, and
+multi-node NCCL; it does not certify full Slurm diagnostic parity. `--type all`
+without an explicit supported component fails instead of omitting diagnostics.
+
+NodeSet expressions retain bracketed commas. Pool/field selections bound the
+partner set. Explicit anchors may acquire compatible partners from the same
+pool; every participant is displayed before confirmation. `--exclude-node`
+excludes a partner, not an explicitly selected anchor. It is invalid for
+`all-nodes` and `per-local-block` modes.
+
+`--local-block <id>` restricts an unambiguous parent island/network/local-block
+domain. Singleton blocks cannot pass an inter-node test. Unavailable members of
+an exact set are not silently dropped.
+
+## Execute And Reconnect
+
+Replace `--dry-run` with `--wait` to submit and advance the full run:
+
+```bash
+mgmt-oke nodes healthchecks --nodes gpu-01,gpu-02 \
+  --type multi-node --mode all-nodes --checks nccl \
+  --queue <local-queue> --wait
+```
+
+Submission requires typed confirmation of the displayed run ID, or `--yes` for
+noninteractive execution. Tests allocate all physical GPUs on each participant.
+Use a maintenance interval with sufficient queue, network, and storage capacity.
+
+Without `--wait`, the command submits only the initial bounded batch and returns
+the run ID. A successful submission is not a benchmark pass. Pending cases need
+an active caller:
+
+```bash
+mgmt-oke health list --pool <pool-name>
+mgmt-oke health get <run-id> --format json
+mgmt-oke health wait <run-id> --namespace <namespace>
+mgmt-oke health results <run-id> --format json
+mgmt-oke health logs <run-id> --case case-0001 --follow
+```
+
+`health wait` can submit pending cases from the recorded plan and clean up
+completed resources. `health list`, `get`, `results`, and `logs` never submit
+workloads or refresh checkpoints. `logs --follow` observes existing jobs only;
+it does not replace `health wait`.
+
+Runs are persisted as namespaced ConfigMaps. Resuming uses the existing run ID,
+job ownership, and object UIDs; it does not create a replacement run. A short
+Lease serializes submission/checkpoint transactions, not the entire test.
+
+### Refresh Metadata Only
+
+```bash
+mgmt-oke services update-metadata --run-id <run-id> --dry-run
+mgmt-oke services update-metadata --run-id <run-id> --yes
+mgmt-oke services update-metadata --pool <pool-name> --namespace <namespace> --yes
+```
+
+This service exports observations and updates checkpoints for already submitted
+cases. It can recover an accepted MPIJob whose POST response was lost, but never
+retries a missing POST, submits a planned case, cancels a workload, or deletes
+resources. Cancelling and cleaned runs remain unchanged. `health wait` is still
+needed to advance pending cases, enforce client-side deadlines, and clean up.
+
+Without `--run-id` or `--pool`, only nonterminal, non-cancelling runs in the
+selected namespace are considered. Repeat `--run-id` for specific runs; it cannot
+be combined with `--pool`. More than `--max-runs` matches (default 32, maximum 128)
+is an error, not a partial selection. Dry-run performs checkpoint reads only.
+Execution requires confirmation or `--yes`; success means the refresh completed,
+not that its observed benchmarks passed. No recurring service is installed.
+
+### Eligibility-Based Service Passes
+
+```bash
+mgmt-oke services active-hc --pool <pool-name> --checks nccl \
+  --queue <local-queue> --dry-run
+mgmt-oke services active-hc --pool <pool-name> --checks nccl \
+  --queue <local-queue> --max-cases 1 --wait
+mgmt-oke services multi-node-hc --pool <pool-name> --checks nccl \
+  --queue <local-queue> --dry-run
+```
+
+Specify exactly one of `--nodes`, `--fields`, or `--pool`. These service commands
+intentionally select a due subset and report a decision for every candidate;
+they are not exact-set or whole-pool benchmark commands. Explicit multi-node
+anchors may select a displayed partner in the same pool. Pool/field selection
+bounds the partner set.
+
+- Default interval is 24 hours, matching Slurm mgmt; override with
+  `--interval-hours`. `--max-cases` defaults to one and is bounded to 32.
+- Eligibility requires a Ready, schedulable, exclusive-GPU worker with no
+  pressure condition, stable Ready status for at least five minutes, and no
+  application Pods or GPU/VF allocations. DaemonSet/mirror infrastructure may
+  remain only when it does not allocate tested devices. Ready stability is not
+  claimed to be measured host uptime.
+- An unfinished benchmark reserves its recorded node identities. Service
+  selection does not bypass that reservation, customer admission, or Slinky
+  ownership.
+- Freshness requires the same node UID, boot identity, and effective profile,
+  including parameters, image reference, environment, and upstream revision.
+  Older records without those fields remain readable but are not fresh passes.
+  Newer failed/incomplete evidence takes precedence over an older pass.
+- Non-passing attempts use `--retry-seconds` (default 600). No automatic retry
+  occurs within that cooldown.
+- Multi-node candidates need matching successful local active evidence less
+  than 24 hours old and at least two minutes old. A failed pair needs a different
+  compatible partner. No alternate partner means no submission, not reuse of
+  the failed pair or an automatic hardware-fault label.
+- Selected case identities and policy are checkpointed and revalidated under
+  the submission Lease. A newly busy, rebooted, replaced, or no-longer-due node
+  causes refusal; the workflow never substitutes a different node after confirmation.
+
+`--dry-run` prints eligibility and validates selected manifests without creating
+a run. `--yes` confirms only the displayed selection. Without `--wait`, the pass
+returns its run ID after initial submission; `health wait <run-id>` advances it.
+A pass with no due candidates exits successfully while reporting why each was
+skipped; this is not a cluster health verdict. Recurring service installation
+and full diagnostic suites remain unfinished.
+
+### Run Enabled Services Once
+
+```bash
+mgmt-oke services all --pool <pool-name> --checks nccl \
+  --enable update-metadata --enable active-hc --enable multi-node-hc \
+  --queue <local-queue> --dry-run
+```
+
+Repeat `--enable` for the desired handlers. No handler is enabled implicitly.
+The combined command requires `--pool`; individual services also support node
+and field selection. Metadata-only passes do not require `--checks nccl`.
+
+Enabled handlers execute in metadata, active, then multi-node order, regardless
+of option order. Each GPU handler reads current nodes, allocations, and history.
+`--max-runs` bounds metadata selection and `--max-cases` bounds each GPU stage.
+The active stage uses the local profile; `--network` selects the multi-node
+transport. Output identifies the handler for every result or eligibility decision.
+
+Dry-run creates no checkpoints or workloads. Execution confirms each selected
+mutation unless `--yes` is supplied. With `--wait`, a failed, incomplete, or
+still-pending stage stops subsequent submissions and reports `NOT_RUN`. Earlier
+completed stages are retained if a later handler fails; there is no rollback.
+
+This is one service pass, not a campaign that waits for new workers to become
+eligible. A newly completed active check still needs its two-minute cooldown
+before multi-node selection, even with `--wait`. Without `--wait`, unfinished
+active runs reserve their participants, so the multi-node handler reports why
+those nodes are unavailable. No schedule or cooldown sleep is installed.
+
+### Example Service Eligibility Output
+
+A fresh two-A100 service dry-run returned the following output. Node, pool,
+queue, and Pod names are replaced with example identifiers; the decisions and
+reasons are from the execution.
+
+```bash
+mgmt-oke services multi-node-hc --pool gpu-rdma --checks nccl \
+  --queue gpu-rdma-queue --iterations 3 --warmup-iterations 1 \
+  --dry-run --format json
+```
+
+```json
+[
+  {
+    "node": "gpu-01",
+    "partner": null,
+    "prior_run": null,
+    "reason": "Requires recent passing active evidence and cooldown.",
+    "record_type": "eligibility",
+    "state": "NEEDS_ACTIVE"
+  },
+  {
+    "node": "gpu-02",
+    "partner": null,
+    "prior_run": null,
+    "reason": "Application Pod kube-system/example-controller prevents an idle service test.",
+    "record_type": "eligibility",
+    "state": "INELIGIBLE"
+  }
+]
+```
+
+No benchmark was submitted. The current idle policy treats Deployment-owned
+infrastructure Pods as blocking as well as user applications; it does not exempt
+an entire namespace. Missing matching evidence is not proof of a GPU failure,
+and exit 0 here does not mean the multi-node test passed.
+
+### Example Combined Service Dry Run
+
+A fresh combined dry-run after the successful whole-pool test returned these
+decisions. Identifiers are sanitized. The successful multi-node result does not
+substitute for the matching single-node active evidence required by service policy.
+
+```bash
+mgmt-oke services all --pool gpu-rdma \
+  --enable update-metadata --enable active-hc --enable multi-node-hc \
+  --checks nccl --network host --queue <local-queue> \
+  --iterations 3 --warmup-iterations 1 --dry-run --format json
+```
+
+Output excerpt (the selected active planned-case row is omitted):
+
+```json
+[
+  {
+    "reason": "No nonterminal recorded runs match this pool and namespace.",
+    "record_type": "service",
+    "service": "update-metadata",
+    "state": "NO_MATCHES"
+  },
+  {
+    "node": "gpu-01",
+    "partner": null,
+    "prior_run": null,
+    "reason": "Initial validation: no matching completed evidence.",
+    "record_type": "eligibility",
+    "service": "active-hc",
+    "state": "SELECTED"
+  },
+  {
+    "node": "gpu-02",
+    "partner": null,
+    "prior_run": null,
+    "reason": "Application Pod kube-system/example-controller prevents an idle service test.",
+    "record_type": "eligibility",
+    "service": "active-hc",
+    "state": "INELIGIBLE"
+  },
+  {
+    "node": "gpu-01",
+    "partner": null,
+    "prior_run": null,
+    "reason": "Requires recent passing active evidence and cooldown.",
+    "record_type": "eligibility",
+    "service": "multi-node-hc",
+    "state": "NEEDS_ACTIVE"
+  },
+  {
+    "node": "gpu-02",
+    "partner": null,
+    "prior_run": null,
+    "reason": "Application Pod kube-system/example-controller prevents an idle service test.",
+    "record_type": "eligibility",
+    "service": "multi-node-hc",
+    "state": "INELIGIBLE"
+  }
+]
+```
+
+The dry-run exited `0`, submitted no MPIJob, and did not create active evidence
+or change shared workloads. `SELECTED` describes a plan, not a passing test.
+
+### Example Submission Output
+
+Fresh CLI submission of a single A100 worker with eight GPUs produced the
+following output. The run ID is replaced with a stable example identifier.
+This is submission evidence, not a completed benchmark or performance result.
+
+```json
+[
+  {
+    "cases": 1,
+    "created_at": "2026-10-12T23:54:03.267723+00:00",
+    "failed": 0,
+    "incomplete": 0,
+    "namespace": "default",
+    "outcome": "IN_PROGRESS",
+    "passed": 0,
+    "pending": 0,
+    "run_id": "hc-0123456789abcdefabcd",
+    "state": "RUNNING",
+    "submitted": 1
+  }
+]
+```
+
+Run-level `RUNNING` means orchestration is active. Its MPIJob may still be queued;
+inspect case state and Kueue admission before interpreting it as GPU execution.
+
+That run subsequently reached its 180-second queue deadline without creating
+benchmark Pods. Its case was recorded as `INCOMPLETE`, and orchestration reached
+`CLEANED` after removing the owned MPIJob. The retained admission event identified
+an untolerated GPU-node taint for the launcher; no NCCL performance result was
+produced. The renderer now gives the CPU-only launcher the workers' exact known
+GPU-taint tolerations, supporting queues that offer only GPU-node flavors without
+changing queue policy or requesting an additional GPU.
+
+### Example Failed Result
+
+A subsequent fresh execution reached worker startup and verified eight physical
+GPUs, but failed during Open MPI daemon launch with a worker-name resolution
+error. The following result is from that execution, with node/run identifiers
+replaced. This is a negative-path example, not a successful performance result.
+
+```bash
+mgmt-oke health results hc-0123456789abcdefabcd --format table
+```
+
+```text
+case       type    state   nodes   ranks  network  job                                correctness  performance  transport  coverage
+---------  ------  ------  ------  -----  -------  ---------------------------------  -----------  -----------  ---------  --------
+case-0001  active  FAILED  gpu-01  8      local    hc-0123456789abcdefabcd-case-0001  UNVERIFIED   UNGRADED     LOCAL      FAIL
+```
+
+The command returned `2`. The run subsequently reported `CLEANED`, with logs and
+scheduling diagnostics retained. No NCCL measurement was produced. `LOCAL`
+identifies the requested local-only profile; it does not override failure or
+certify a successful transport test.
+
+### Example Successful Local Result
+
+A fresh single-worker BM.GPU4.8 execution on 2026-10-13 UTC used eight A100
+40-GB GPUs. The command below retains the executed options, with the node,
+queue, and run identifiers replaced for publication.
+
+```bash
+mgmt-oke nodes healthchecks --nodes gpu-01 \
+  --type active --checks nccl --queue <local-queue> \
+  --iterations 3 --warmup-iterations 1 \
+  --queue-timeout 300 --startup-timeout 600 --timeout 180 \
+  --wait --keep-resources --observation-timeout 1200 --yes --format table
+```
+
+The command exited with status `0`:
+
+```text
+case       type    state      nodes   ranks  network  job                                correctness  performance  transport  coverage
+---------  ------  ---------  ------  -----  -------  ---------------------------------  -----------  -----------  ---------  --------
+case-0001  active  SUCCEEDED  gpu-01  8      local    hc-0123456789abcdefabcd-case-0001  PASS         UNGRADED     LOCAL      PASS
+```
+
+The launcher log contained these complete measurement rows and summaries:
+
+```text
+  4294967296    1073741824     float     sum      -1  32413.9  132.50  231.88       0  32393.6  132.59  232.03       0
+  8589934592    2147483648     float     sum      -1  64471.8  133.24  233.16       0  64620.5  132.93  232.63       0
+# Out of bounds values : 0 OK
+# Avg bus bandwidth    : 232.424
+```
+
+After size/count/type/operator/root, each row reports out-of-place and in-place
+time (microseconds), algorithm bandwidth (GB/s), bus bandwidth (GB/s), and wrong
+result count. At 8 GiB, bus bandwidth was 233.16 GB/s out-of-place and
+232.63 GB/s in-place, with zero errors. These are short-run observations, not
+a performance baseline or a multi-node/RDMA certification. Performance remains
+`UNGRADED` because no minimum threshold was configured.
+
+The collector retained an intermediate completion observation and fetched a
+stable final snapshot before recording success. All eight rank identities and
+diagnostic completion markers were present. Earlier incomplete runs were not
+regraded or used as the evidence for this result.
+
+Inspect the recorded result and release retained resources with:
+
+```bash
+mgmt-oke health results hc-0123456789abcdefabcd --format json
+mgmt-oke health cleanup hc-0123456789abcdefabcd --yes
+```
+
+### Example Successful Whole-Pool RDMA Result
+
+A fresh BM.GPU4.8 whole-pool execution on 2026-10-13 UTC used two workers in
+different local blocks, with eight A100 GPUs per worker. Pool, queue, node, and
+run identifiers below are sanitized; options and measurements are retained.
+
+```bash
+mgmt-oke nodes healthchecks --pool gpu-rdma \
+  --type multi-node --mode all-nodes --checks nccl --network host \
+  --queue <local-queue> --iterations 3 --warmup-iterations 1 \
+  --queue-timeout 300 --startup-timeout 600 --timeout 300 \
+  --wait --keep-resources --observation-timeout 1500 --yes --format json
+```
+
+Execution completed, but the first observer encountered the old per-Pod log
+limit. After correcting collection, the same run was observed again without
+resubmitting its MPIJob:
+
+```bash
+mgmt-oke health wait hc-0123456789abcdefabcd \
+  --keep-resources --observation-timeout 120 --poll-interval 5 --format json
+```
+
+The second command exited `0`. Excerpt from its case result:
+
+```json
+{
+  "state": "SUCCEEDED",
+  "result": {
+    "status": "PASS",
+    "correctness": "PASS",
+    "coverage": "PASS",
+    "performance": "UNGRADED",
+    "transport": "RDMA_OBSERVED",
+    "reasons": []
+  }
+}
+```
+
+The complete launcher log contained sixteen rank markers and these rows:
+
+```text
+  4294967296    1073741824     float     sum      -1  54885.3   78.25  146.73       0  52836.6   81.29  152.41       0
+  8589934592    2147483648     float     sum      -1   104960   81.84  153.45       0   108766   78.98  148.08       0
+# Out of bounds values : 0 OK
+# Avg bus bandwidth    : 150.167
+```
+
+Both worker logs and the launcher log were complete, with no collection
+warnings. Worker identities, launcher exit, rank participation, and inter-node
+RDMA channels were verified before grading. The earlier truncated snapshot
+remains in history and was not combined with another attempt.
+
+These short-run measurements are not a performance baseline. This validates
+two-worker whole-pool host networking across local blocks, not every pairing
+mode, larger pools, VF transport, or other shapes. Use
+`health cleanup <run-id> --yes` after inspecting retained evidence.
+
+## Settings
+
+| Option | Meaning |
+| --- | --- |
+| `--network auto\|local\|host\|vf` | Local tests or supported RDMA transport profile. |
+| `--scheduler auto\|direct\|kueue\|slurm` | Admission adapter; Slurm is reserved and currently rejected. |
+| `--reservation` | Real Slurm reservation, not a Kueue queue; unavailable until the Slurm adapter exists. |
+| `--image` | Container image override, subject to runtime validation. |
+| `--env KEY=VALUE` | Repeatable validated NCCL/UCX/HCOLL overrides; evidence settings cannot be disabled. |
+| `--min-bytes`, `--max-bytes`, `--factor` | Binary message sizes and multiplier. The sequence must include exactly 8 GiB. |
+| `--iterations`, `--warmup-iterations` | Per-message measurement and warmup counts. |
+| `--repetitions` | Separate recorded cases, not concatenated attempts. |
+| `--min-bus-bandwidth` | Explicit minimum GB/s for both 8 GiB in-place and out-of-place bus bandwidth. |
+| `--concurrency` | Maximum concurrently active cases on disjoint nodes. |
+| `--queue-timeout`, `--startup-timeout`, `--timeout` | Separate per-case phase deadlines in seconds. |
+| `--observation-timeout` | Maximum duration of this wait/log-follow invocation; expiration does not restart the run. |
+| `--output-dir` | Private evidence directory; use the same directory when reconnecting. |
+| `--keep-resources` | Retain MPIJobs/Pods after collection. Overlapping later cases remain blocked; resume `health wait` without this flag to release completed resources and continue. |
+
+Queue deadlines and case advancement currently require an active caller. No
+background service is installed. Kubernetes workload deadlines bound already
+started Pods, but do not replace client-side queue supervision.
+
+## Results And Evidence
+
+Results separate execution state, correctness, performance, transport, and
+coverage. Success requires exact selected node UIDs, worker Pod UIDs, all MPI
+ranks, successful completion, correctness checks, complete logs, and the exact
+8 GiB reporting row. RDMA tests additionally require inter-node data-channel
+evidence covering every participant. Socket fallback is not verified RDMA.
+
+Without `--min-bus-bandwidth`, measured performance is `UNGRADED`. A failed
+collective does not identify every participant as faulty hardware.
+
+The default evidence directory is `~/.local/state/mgmt-oke/healthchecks` on the
+operator. Immutable checksum-addressed exports contain the selected case,
+request/options, runtime identities, logs, Kueue Workload status, and events tied
+to verified MPIJob, Pod, and Workload UIDs. Each run directory is private.
+Observed requeues and Pod/container changes have distinct snapshots; logs from
+different attempts are never combined into one passing assessment.
+If completion occurs while evidence is being collected, the workflow reads a
+new stable snapshot before assigning the terminal verdict. Success also requires
+an observed launcher exit, not merely an MPIJob completion condition.
+Changed scheduling decisions also produce snapshots, including when no Pod has
+started. Repeated event counts alone do not create another snapshot. Events may
+expire before observation; an empty event list is not proof that no event occurred.
+Log reads use bounded raw responses and explicit UTF-8 decoding. Workers have a
+2 MiB log limit. The launcher allowance includes up to 1 MiB of diagnostics per
+rank plus 2 MiB for other output, subject to the 32 MiB total case budget. An
+oversized or truncated log remains incomplete, including on larger pools;
+raising rank count never removes the total bound. Invalid text or an
+interrupted stream cannot establish success. Worker SSH readiness retries
+transient failures within the startup deadline, retaining the initially collected
+per-run host keys and strict host-key checking throughout.
+
+```bash
+mgmt-oke health logs <run-id> --role all --format json
+mgmt-oke health cancel <run-id>
+mgmt-oke health cleanup <run-id>
+```
+
+Cancellation exports readable logs before suspension and waits for Pod removal.
+For Kueue jobs, it first sets the owned Workload's `spec.active=false`; suspending
+only the MPIJob would allow Kueue to resume an already admitted job. Workload
+ownership, queue, UID, and resource version are checked before deactivation.
+Concurrent controller changes require another observation of the same run.
+If a suspended MPIJob retains worker Pods, cancellation verifies all recorded
+exports, checkpoints deletion intent, and deletes the owned MPIJob with UID and
+resource-version preconditions. It waits for garbage collection to remove the
+Pods. Reconnecting resumes that wait; unexplained orphan Pods remain an error.
+Cleanup requires all cases to be terminal, verifies recorded exports, and removes
+only owned workloads with UID/resource-version preconditions. It retains the run
+checkpoint. Repeating a pending cancel/cleanup command verifies convergence;
+`CLEANED` means resource cleanup, not that the benchmark passed.
+
+Do not remove or relocate evidence files before cleanup. If an export cannot be
+verified, logs cannot be read, or the workload attempt changes, the tool retains
+resources and reports the verification failure.
+
+## Exit Status
+
+Submission without `--wait` returns `0` for an accepted initial batch. For
+`health results` and waits: `0` means all requested checks passed, `1` incomplete
+or degraded evidence, `2` failure, `3` still in progress/action required, and
+`130` cancellation. `health get` and `list` report retrieval success separately
+from recorded outcome. Pending cancellation or cleanup returns `3`; successful
+cleanup itself does not turn a failed test into a passed test.

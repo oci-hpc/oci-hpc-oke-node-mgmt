@@ -134,8 +134,19 @@ Management Tool.
 - [`replacing-worker-boot-volumes.md`](replacing-worker-boot-volumes.md)
 - [`kubernetes-upgrades.md`](kubernetes-upgrades.md)
 
+The NCCL preview includes one-shot `services update-metadata` observations and
+bounded eligibility-based `services active-hc` / `multi-node-hc` passes, with
+explicitly enabled `services all` orchestration. Full diagnostic coverage and
+recurring scheduling remain unfinished. See [profile coverage](nccl-profile-coverage.md) for shape
+and transport implementation versus live validation.
+
 ## Not Implemented Yet
 
+- full Slurm diagnostic-suite parity, including passive host setup evidence,
+  GPU stress/SDC, separate InfiniBand bandwidth/latency, and RCCL
+- Slurm/reservation benchmark execution, specialized DRA/MNNVL/preview transports,
+  and recurring healthcheck service handlers; explicit NCCL subsets use the
+  [preview healthcheck workflow](nccl-healthchecks.md)
 - automatic Kueue `ClusterQueue` quota updates after worker-pool capacity changes
 - Cluster Autoscaler bounds updates
 - OKE add-on installation, update, or removal

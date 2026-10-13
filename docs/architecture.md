@@ -684,3 +684,78 @@ are derived from the discovery snapshot and include:
 
 Health commands return `0` for pass or informational results, `1` when warnings
 exist, and `2` when a check fails.
+
+## NCCL Execution (Preview)
+
+The benchmark subsystem is separate from the pure inventory health engine.
+`nodes healthchecks` defaults to passive API readiness; active categories require
+an explicit supported component, currently NCCL. Typed requests and reviewed
+profiles produce exact-node MPIJobs using existing MPI Operator/Kueue resources.
+
+Run-owned ConfigMaps persist immutable participant identities, options, case
+state, and bounded observation history. A dedicated short-lived Lease protects
+submission and checkpoint transactions across namespaces. Submission intent is
+persisted before POST; reconnect verifies and adopts an already accepted owned
+job rather than creating a replacement. Resource-version conflicts halt the pass.
+
+Evidence collection validates MPIJob/Job/Pod ownership chains, node and container
+identities, complete logs, rank placement, correctness, and transport. Private
+content-addressed exports are verified before suspension or deletion. Cleanup
+uses UID/resource-version preconditions and confirms MPIJob/Pod absence; the
+original result digest is not overwritten by later cleanup observations.
+Terminal results require an unchanged MPIJob specification/status across evidence
+collection and an observed launcher exit for successful jobs. A completion that
+races with log collection is exported as an intermediate snapshot and observed
+again before grading. Cleanup also refuses a changing observation.
+Scheduling evidence includes bounded Kueue Workload status and events selected
+by verified object UID. Workload labels narrow discovery but never substitute
+for controller ownership checks. Admission changes produce distinct snapshots;
+repeated event counts do not. Diagnostic read failures prevent destructive cleanup.
+
+`health wait` advances pending cases and enforces client-side deadlines without
+holding the Lease between polls. Read-only commands never submit tests. No
+background controller is installed; service scheduling and the remaining
+diagnostic adapters are still under development. See
+[NCCL Healthchecks](nccl-healthchecks.md) for operational behavior and limitations.
+
+`services update-metadata` uses a separate observation-only workflow under the
+same Lease. It rechecks the selected checkpoint UID, recovers verified accepted
+submissions, and exports/assesses existing attempts. It never calls workload
+creation, cancellation, deletion, or deadline enforcement. Unsubmitted cases and
+cancellation intent are left for their explicit execution workflows.
+
+Kueue cancellation deactivates the UID-verified MPIJob-owned Workload before
+suspending the job. This prevents an admitted Workload from immediately resuming
+it. Deactivation uses the served Workload API and UID/resource-version checks;
+missing ownership or an unconfirmed response stops the pass. Cancellation waits
+for a fresh inactive/suspended observation and Pod removal before completing.
+When the controller retains workers, cancellation records deletion intent before
+a foreground MPIJob deletion. It verifies every recorded export and the inactive
+Kueue ownership state first. The checkpoint distinguishes a recoverable garbage
+collection wait from an unexplained disappeared job with orphan Pods.
+
+Eligibility-based `active-hc` and `multi-node-hc` service passes reuse the same
+workflow. A pure policy planner reports every candidate decision, selects bounded
+idle participants, and records the policy in the immutable plan. Preparation,
+confirmation-time submission, and each case's final preflight recheck current
+allocations and history. Freshness uses node UID/boot identity and a recorded
+profile fingerprint; null legacy fields never establish a fresh pass. Failed
+multi-node attempts exclude previous partners without attributing hardware fault.
+`services all` executes explicitly enabled handlers in metadata, active, then
+multi-node order. Each stage reads current allocations/history, and a nonpassing
+waited result stops later submissions. Output preserves completed stages when a
+later stage fails. New active evidence must satisfy the normal cooldown; no
+recurring controller or cooldown sleep is installed.
+
+The launcher resolves each worker within its bounded startup interval, then
+records a run-local SSH address mapping and pins its host keys. Subsequent SSH
+launches use that address instead of depending on another DNS lookup during
+CoreDNS negative-cache propagation. FQDN preservation and direct launcher SSH
+spawning are configured for both ORTE and PRRTE; keys are not redistributed to
+workers. MPI hostfile names and identity/coverage validation remain unchanged.
+
+Each MPI rank directs NCCL diagnostics to a private, unique container-local file,
+then emits that file after its benchmark process exits. This prevents initialization
+messages from interrupting partially printed measurement rows. Per-rank diagnostic
+exports are limited to 1 MiB; missing/oversized diagnostics fail the rank rather
+than silently dropping evidence. The parser continues to reject torn rows.

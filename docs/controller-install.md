@@ -54,6 +54,12 @@ The controller/operator node must have:
 - an enhanced OKE cluster for managed Compute Cluster RDMA pools
 - Network access to the Kubernetes API and OCI regional APIs
 
+The [NCCL healthchecks preview](nccl-healthchecks.md) additionally requires an
+existing MPI Operator, the selected queue/network resources, and benchmark
+RBAC described in its [permissions section](nccl-healthchecks.md#kubernetes-permissions).
+Kueue execution requires patch access to namespaced Workloads for cancellation.
+Benchmark handlers do not install operators or change shared queue policies.
+
 Validate the controller environment before installing:
 
 ```bash
@@ -69,7 +75,7 @@ Clone the public repository on the controller/operator node:
 
 ```bash
 cd /home/ubuntu
-git clone https://github.com/mrabhiram/oci-hpc-oke-node-mgmt.git
+git clone https://github.com/oci-hpc/oci-hpc-oke-node-mgmt.git
 ```
 
 ## Install
@@ -456,3 +462,32 @@ If table output is not convenient for automation, use JSON or CSV:
 mgmt-oke reconcile --format json
 mgmt-oke nodes list --format csv
 ```
+
+## NCCL Preview Prerequisites
+
+The CLI includes `nodes healthchecks` and the `health` run-management commands.
+It also includes `services update-metadata` for a bounded observation-only pass
+over existing runs. This requires checkpoint writes and evidence-export storage,
+but never launches or cleans up a benchmark. It does not install a scheduler.
+`services active-hc` and `multi-node-hc` execute explicitly requested bounded
+NCCL passes using the same submission permissions. They do not install a
+recurring service. Review the [profile coverage matrix](nccl-profile-coverage.md)
+before selecting a shape or transport.
+Installation does not deploy MPI Operator, Kueue queues, SR-IOV attachments, or
+recurring diagnostic services. Benchmark admission uses existing cluster resources.
+
+```bash
+mgmt-oke health profiles
+mgmt-oke nodes healthchecks --pool <pool-name> \
+  --type active --checks nccl --queue <local-queue> --dry-run
+```
+
+Run the dry run with the identity that will submit tests. It checks permissions,
+GPU allocation, required operators, queue compatibility, and server admission.
+Reserve operator disk space for evidence at `~/.local/state/mgmt-oke/healthchecks`
+and worker disk space for the test image. Keep the same evidence directory when
+using `health wait`, `cancel`, or `cleanup` after reconnecting.
+
+See [NCCL Healthchecks](nccl-healthchecks.md#kubernetes-permissions) for the RBAC
+surface and preview limitations. Benchmark permissions do not require node
+cordon/drain, eviction, or OCI lifecycle mutation privileges.
